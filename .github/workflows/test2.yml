@@ -6,7 +6,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Free disk space
         run: |
@@ -74,7 +74,7 @@ jobs:
 
   gh-pages:
     needs: [ build ]
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
@@ -120,7 +120,7 @@ jobs:
           git push -f origin gh-pages
   release:
     needs: [ build ]
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
