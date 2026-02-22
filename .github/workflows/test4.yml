@@ -1,0 +1,219 @@
+name: test4
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex g++ gawk gcc-multilib gettext \
+            git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get build info
+        id: info
+        run: |
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          TIME="$(curl -sSf -H "Authorization: token ${{ github.token }}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" | jq -r .created_at)"
+          VERSION="ci-$(date -d "${TIME}" -u +'%Y%m%d-%H%M%S')-${GITHUB_SHA:0:8}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "time=${TIME}" >> $GITHUB_OUTPUT
+          echo "${VERSION}" > version.buildinfo  # 改为 version.buildinfo 保持一致
+
+      - name: Hook the openwrt_core URL for opkg
+        run: |
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          sed -i "s|%U/targets/%S/packages|https://${OWNER}.github.io/${REPO}/${GITHUB_REF_NAME}/%R|" include/feeds.mk
+
+      - name: Cache dl directory
+        uses: actions/cache@v4
+        with:
+          path: dl/
+          key: ${{ runner.os }}-openwrt-dl-${{ hashFiles('**/Makefile') }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-dl-
+
+      - name: Update and install feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure
+        run: |
+          cat <<'EOF' > .config
+          CONFIG_TARGET_ipq50xx=y
+          CONFIG_TARGET_ipq50xx_arm=y
+          CONFIG_TARGET_MULTI_PROFILE=y
+          CONFIG_TARGET_ALL_PROFILES=y
+          CONFIG_TARGET_PER_DEVICE_ROOTFS=y
+          CONFIG_IB=y
+          CONFIG_SDK=y
+          CONFIG_MAKE_TOOLCHAIN=y
+          CONFIG_ALL_NONSHARED=y
+          CONFIG_REPRODUCIBLE_DEBUG_INFO=y
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-app-easymesh=y
+          EOF
+          make defconfig
+
+      - name: Download
+        run: |
+          make -j$(nproc) download || make -j1 download V=s
+
+      - name: Build tools
+        run: |
+          make -j$(nproc) tools/install
+
+      - name: Build toolchain
+        run: |
+          make -j$(nproc) toolchain/install
+
+      - name: Build all
+        run: |
+          make -j$(nproc) || make -j1 V=s
+
+      - name: Upload bin to artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-ipq50xx-arm
+          path: |
+            bin/targets/ipq50xx/arm/*
+            version.buildinfo
+          retention-days: 7
+
+      - name: Upload dl to artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dl
+          path: dl/*
+          retention-days: 1
+
+  gh-pages:
+    needs: [build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Configure git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Download bin from artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: bin-ipq50xx-arm
+          path: bin/
+
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          path: 'gh-pages'
+          ref: 'gh-pages'
+          fetch-depth: 0
+
+      - name: Copy contents
+        run: |
+          VERSION="$(cat "bin/version.buildinfo")"
+          mkdir -p "gh-pages/${GITHUB_REF_NAME}/${VERSION}/"
+          # 根据 OpenWrt 实际输出结构调整
+          if [ -d "bin/packages" ]; then
+            cp -avr bin/packages/* "gh-pages/${GITHUB_REF_NAME}/${VERSION}/"
+          else
+            # 如果没有单独的 packages 目录，复制所有文件
+            cp -avr bin/* "gh-pages/${GITHUB_REF_NAME}/${VERSION}/"
+          fi
+
+      - name: Commit and push
+        run: |
+          cd gh-pages
+          git add .
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          VERSION="$(cat ../bin/version.buildinfo)"
+          git commit -m "Add: ${GITHUB_REF_NAME}: ${VERSION}"
+          git push origin gh-pages
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Organize files
+        run: |
+          mkdir -p bin/targets/ipq50xx/arm/
+          cp -r artifacts/bin-ipq50xx-arm/* bin/targets/ipq50xx/arm/
+          mkdir -p dl/
+          cp -r artifacts/dl/* dl/ 2>/dev/null || true
+
+      - name: Create archives
+        run: |
+          tar cvf dl.tar -C dl/ .
+          tar cvf bin-ipq50xx.tar -C bin/targets/ipq50xx/arm/ .
+
+      - name: Generate release info
+        id: release_info
+        run: |
+          TIME="$(curl -sSf -H "Authorization: token ${{ github.token }}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" | jq -r .created_at)"
+          TAG="ci-${GITHUB_REF_NAME}-$(date -d "${TIME}" -u +'%Y%m%d-%H%M%S-%Z')"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          
+          {
+            echo "CI ${GITHUB_REF_NAME} $(date -d "${TIME}" -u +'%Y-%m-%d %H:%M:%S %Z(%:z)')"
+            echo ""
+            echo "# ${GITHUB_REF_NAME}"
+            echo "Build time: \`$(date -d "${TIME}" -u +'%Y-%m-%d %H:%M:%S %Z(%:z)')\`"
+            echo "Release version: ${TAG}"
+            echo ""
+            echo "## Sources"
+            if [ -f bin/targets/ipq50xx/arm/feeds.buildinfo ]; then
+              awk -F'[ ^]' '{printf "%s: \`%s\`\n", $2, $4}' bin/targets/ipq50xx/arm/feeds.buildinfo
+            fi
+            echo ""
+            echo "## SHA256"
+            if [ -f bin/targets/ipq50xx/arm/sha256sums ]; then
+              awk '{printf "%s: \`%s\`\n", $2, $1}' bin/targets/ipq50xx/arm/sha256sums | sed 's/^\*//'
+            fi
+          } > Release.md
+          
+          echo "name=$(head -n 1 Release.md)" >> $GITHUB_OUTPUT
+          tail -n +2 Release.md > Body.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2  # 升级到 v2
+        with:
+          prerelease: true
+          tag_name: ${{ steps.release_info.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.release_info.outputs.name }}
+          body_path: Body.md
+          files: |
+            bin/targets/ipq50xx/arm/sha256sums
+            bin/targets/ipq50xx/arm/*.*
+            *.tar
