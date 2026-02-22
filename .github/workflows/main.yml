@@ -1,0 +1,127 @@
+name: CI - Packages Feed Only
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+
+jobs:
+  build-packages:
+    runs-on: ubuntu-22.04  # 升级到更新的 LTS 版本
+    
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+          docker system prune -af || true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ccache ecj fastjar file g++ gawk \
+            gettext git java-propose-classpath libelf-dev libncurses5-dev \
+            libncursesw5-dev libssl-dev python3 python3-distutils \
+            python3-setuptools python3-dev rsync subversion swig time \
+            xsltproc zlib1g-dev
+
+      - name: Checkout
+        uses: actions/checkout@v4  # 升级到 v4
+        with:
+          fetch-depth: 0
+
+      - name: Update and install feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure for packages only
+        run: |
+          cat > .config << 'EOF'
+          CONFIG_DEVEL=y
+          CONFIG_BUILD_ALL_HOST_TOOLS=y
+          CONFIG_PACKAGE_kmod-sched-cake=n  # 示例：排除内核模块
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl=y
+          # 添加你需要的软件包
+          EOF
+          
+          make defconfig
+
+      - name: Download package sources
+        run: |
+          make download -j$(nproc) V=s
+
+      - name: Build host tools
+        run: |
+          make tools/install -j$(nproc) V=s || make tools/install -j1 V=s
+
+      - name: Build toolchain
+        run: |
+          make toolchain/install -j$(nproc) V=s || make toolchain/install -j1 V=s
+
+      - name: Build packages
+        run: |
+          # 仅编译软件包，不编译固件
+          make package/compile -j$(nproc) V=s IGNORE_ERRORS=1 || \
+          make package/compile -j1 V=s IGNORE_ERRORS=1
+
+      - name: Index packages
+        run: |
+          make package/index V=s
+
+      - name: Collect packages
+        run: |
+          mkdir -p packages-collected
+          # 收集编译好的软件包
+          find bin/packages -type f \( -name "*.ipk" -o -name "*.apk" \) -exec cp {} packages-collected/ \;
+          # 复制软件源索引
+          find bin/packages -type f \( -name "Packages*" -o -name "*.json" \) -exec cp {} packages-collected/ \;
+          ls -la packages-collected/
+
+      - name: Upload packages to artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-feed-${{ github.run_id }}
+          path: packages-collected/*
+          retention-days: 7
+
+  release-packages:
+    needs: build-packages
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      packages: write
+    
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          name: packages-feed-${{ github.run_id }}
+          path: packages/
+
+      - name: Generate package index
+        run: |
+          cd packages/
+          # 重新生成软件源索引
+          ${GITHUB_WORKSPACE}/scripts/ipkg-make-index.sh . > Packages 2>/dev/null || true
+          gzip -9c Packages > Packages.gz
+          ls -la
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2  # 升级到 v2
+        with:
+          tag_name: packages-${{ github.ref_name }}-${{ github.run_number }}
+          name: Packages Feed ${{ github.ref_name }} #${{ github.run_number }}
+          body: |
+            ## OpenWrt Packages Feed
+            
+            - **Branch:** ${{ github.ref_name }}
+            - **Commit:** ${{ github.sha }}
+            - **Build Date:** ${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
