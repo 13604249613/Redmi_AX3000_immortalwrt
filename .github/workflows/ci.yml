@@ -177,10 +177,11 @@ jobs:
 
 
       - name: Deploy packages to gh-pages
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           DEST="gh-pages/${BRANCH}"
-
           mkdir -p "${DEST}/targets/qualcommax/ipq50xx"
           rsync -av --delete \
             --exclude="*.tar.zst" \
@@ -191,11 +192,27 @@ jobs:
             --exclude="*.itb" \
             bin/targets/qualcommax/ipq50xx/ \
             "${DEST}/targets/qualcommax/ipq50xx/"
-
           if [ -d bin/packages ]; then
             mkdir -p "${DEST}/packages"
             rsync -av --delete bin/packages/ "${DEST}/packages/"
           fi
+
+          # 安装 usign
+          sudo apt-get install -y usign
+
+          # 写入私钥
+          echo "${SIGNING_KEY}" > /tmp/secret.key
+
+          # 对所有 Packages 文件重新签名
+          find "${DEST}" -name "Packages" | while read pkg; do
+            usign -S -m "${pkg}" -s /tmp/secret.key -x "${pkg}.sig"
+          done
+
+          # 清理私钥
+          rm -f /tmp/secret.key
+
+          # 同时把公钥部署到 gh-pages 根目录
+          cp public.key gh-pages/public.key
 
           cd gh-pages
           git config user.name "github-actions[bot]"
