@@ -141,23 +141,28 @@ jobs:
       - name: Deploy packages to gh-pages
         run: |
           BRANCH="${GITHUB_REF_NAME}"
-          # 目标路径结构:
-          #   <branch>/targets/qualcommax/ipq50xx/packages/  (target packages)
-          #   <branch>/packages/                             (arch packages, mips_24kc etc.)
           DEST="gh-pages/${BRANCH}"
-          # 同步 target packages
+
           mkdir -p "${DEST}/targets/qualcommax/ipq50xx"
           rsync -av --delete \
+            --exclude="*.tar.zst" \
+            --exclude="*.tar.xz" \
+            --exclude="*.tar.bz2" \
+            --exclude="*.img.gz" \
+            --exclude="*.img" \
+            --exclude="*.itb" \
             bin/targets/qualcommax/ipq50xx/ \
             "${DEST}/targets/qualcommax/ipq50xx/"
-          # 同步 arch packages (bin/packages/*)
+
           if [ -d bin/packages ]; then
             mkdir -p "${DEST}/packages"
             rsync -av --delete bin/packages/ "${DEST}/packages/"
           fi
+
           cd gh-pages
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --quiet || git commit -m "Deploy packages: ${GITHUB_REF_NAME} @ ${GITHUB_SHA:0:8}"
           git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+
