@@ -198,6 +198,7 @@ jobs:
           fi
 
           # 安装 usign
+          sudo apt-get update -y
           sudo apt-get install -y usign
 
           # 写入私钥
