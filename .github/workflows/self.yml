@@ -1,8 +1,5 @@
 name: self
 
-on:
-  workflow_dispatch:
-  push:
 
 jobs:
   build:
