@@ -2,7 +2,7 @@ ath11k-firmware-ipq5018 - 2024.03.14~795809c7-r2
 ath11k-firmware-qcn6122 - 2024.03.14~795809c7-r2
 autocore - 42
 automount - 10
-base-files - 1~7213dec3
+base-files - 1~8a802a5a
 block-mount - 2024.07.14~408c2cc4-r1
 busybox - 1.36.1-r2
 ca-bundle - 20240203-r1
