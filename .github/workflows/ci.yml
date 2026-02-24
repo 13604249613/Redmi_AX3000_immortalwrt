@@ -27,6 +27,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ✅ 编译前导入签名密钥，由 OpenWrt 构建系统在 make 时自动签名
+      - name: Import signing key
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          echo "${SIGNING_KEY}" > key-build
+          # 从私钥派生公钥
+          usign -P -s key-build -p key-build.pub
+          # 同时更新仓库根目录的 public.key（供 pages job 部署）
+          cp key-build.pub public.key
+
       - name: Hook the openwrt_core URL for opkg
         run: |
           OWNER="${GITHUB_REPOSITORY%%/*}"
@@ -54,6 +65,9 @@ jobs:
 
             CONFIG_ALL_NONSHARED=y
             CONFIG_REPRODUCIBLE_DEBUG_INFO=y
+
+            # ✅ 启用包签名，配合 key-build 在编译时自动签名
+            CONFIG_SIGNED_PACKAGES=y
 
             CONFIG_PACKAGE_luci=y
           EOF
@@ -156,7 +170,6 @@ jobs:
         with:
           ref: gh-pages
           path: gh-pages
-          # 如果 gh-pages 分支不存在会报错，下一步会自动处理
         continue-on-error: true
 
       - name: Init gh-pages if not exists
@@ -175,10 +188,8 @@ jobs:
           name: bin-qualcommax-ipq50xx
           path: bin/targets/qualcommax/ipq50xx/
 
-
+      # ✅ 编译产物已由构建系统完成签名，直接部署即可，无需事后重签
       - name: Deploy packages to gh-pages
-        env:
-          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           DEST="gh-pages/${BRANCH}"
@@ -197,23 +208,8 @@ jobs:
             rsync -av --delete bin/packages/ "${DEST}/packages/"
           fi
 
-          # 安装 usign
-          sudo apt-get update -y
-          sudo apt-get install -y usign
-
-          # 写入私钥
-          echo "${SIGNING_KEY}" > /tmp/secret.key
-
-          # 对所有 Packages 文件重新签名
-          find "${DEST}" -name "Packages" | while read pkg; do
-            usign -S -m "${pkg}" -s /tmp/secret.key -x "${pkg}.sig"
-          done
-
-          # 清理私钥
-          rm -f /tmp/secret.key
-
-          # 同时把公钥部署到 gh-pages 根目录
-          cp public.key gh-pages/public.key
+          # 部署公钥到 gh-pages 根目录（供设备端 opkg 验证使用）
+          cp bin/targets/qualcommax/ipq50xx/../../../../../../public.key gh-pages/public.key || true
 
           cd gh-pages
           git config user.name "github-actions[bot]"
@@ -221,4 +217,3 @@ jobs:
           git add -A
           git diff --cached --quiet || git commit -m "Deploy packages: ${GITHUB_REF_NAME} @ ${GITHUB_SHA:0:8}"
           git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
-
