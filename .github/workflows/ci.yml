@@ -4,6 +4,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    environment: SIGNING_KEY
     steps:
       - name: Free disk space
         run: |
